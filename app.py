@@ -1,50 +1,25 @@
 import streamlit as st
 import pandas as pd, numpy as np
 import altair as alt
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
-from src.features import add_lags
 
-st.set_page_config(page_title="Crypto returns – DTR feedback", layout="wide")
+from src.features import add_pct_and_lags, build_supervised
 
-@st.cache_resource
-def load_artifact(path="models/model_feedback.pkl"):
-    return joblib.load(path)
+st.set_page_config(page_title="DTR – Entrena y Predice en vivo", layout="wide")
+st.title("DecisionTreeRegressor – Entrenamiento en la app + Predicción")
 
-def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedback=True):
-    df = df_raw.copy()
-    # close_pct and lags if needed
-    if any(name.startswith("close_pct") for name in feature_names):
-        df["close_pct"] = df["close"].pct_change()
-        for l in range(1, n_lags+1):
-            df[f"close_pct_lag{l}"] = df["close_pct"].shift(l)
-    # price lags if needed
-    for f in base_features:
-        if any(name.startswith(f"{f}_lag") for name in feature_names):
-            for l in range(1, n_lags+1):
-                df[f"{f}_lag{l}"] = df[f].shift(l)
-    df_lags = df.dropna().reset_index(drop=True)
-    if df_lags.empty:
-        raise ValueError("No hay suficientes filas para generar lags. Aumentá 'Usar últimos N registros'.")
-    Xi = df_lags.iloc[[-1]].copy()
-    if use_feedback:
-        if "prev_pred" in feature_names:
-            Xi["prev_pred"] = st.session_state.get("prev_pred_streamlit", 0.0)
-        if "prev_err" in feature_names:
-            prev_pred = st.session_state.get("prev_pred_streamlit", 0.0)
-            prev_real = st.session_state.get("prev_real_streamlit", 0.0)
-            Xi["prev_err"] = prev_pred - prev_real
-    for col in feature_names:
-        if col not in Xi.columns:
-            Xi[col] = 0.0
-    Xi = Xi[feature_names]
-    return Xi, df
+N_LAGS_DEFAULT = 5
+BASE_FEATURES = ['close']  # usamos retornos de close (close_pct + lags)
 
-def load_df(uploaded):
+@st.cache_data(show_spinner=False)
+def load_csv(uploaded):
     if uploaded is not None:
         df = pd.read_csv(uploaded)
     else:
-        st.info("Usando datos de demo: data/sample_binance.csv")
         df = pd.read_csv("data/sample_binance.csv")
+    # normalizar fecha
     if "open_time" in df.columns:
         if np.issubdtype(type(df["open_time"].iloc[0]), np.integer):
             df["date"] = pd.to_datetime(df["open_time"], unit="ms")
@@ -56,66 +31,117 @@ def load_df(uploaded):
         raise ValueError("No encuentro 'open_time' o 'date' en el CSV.")
     return df.sort_values("date").reset_index(drop=True)
 
-def next_prediction(df, artifact, last_real_input):
-    model = artifact["model"]
-    BASE_FEATURES = artifact.get("base_features", ["close","volume","high","low","open"])
-    N_LAGS = int(artifact.get("n_lags", 5))
-    USE_FEEDBACK = bool(artifact.get("use_feedback", True))
-    feature_names = artifact.get("feature_names", None)
-    if feature_names is None and hasattr(model, "feature_names_in_"):
-        feature_names = list(model.feature_names_in_)
-    if feature_names is None:
-        feature_names = [f"close_pct_lag{i}" for i in range(1, N_LAGS+1)]
-    Xi, df_proc = ensure_feature_names(df, feature_names, BASE_FEATURES, N_LAGS, USE_FEEDBACK)
-    yhat = float(model.predict(Xi)[0])
-    if USE_FEEDBACK and last_real_input and str(last_real_input).strip():
-        try:
-            real_pct = float(str(last_real_input).replace(",", "."))
-            st.session_state["prev_real_streamlit"] = real_pct/100.0
-            st.session_state["prev_pred_streamlit"] = yhat
-        except:
-            st.warning("No pude interpretar el retorno real ingresado (usa 0.8 ó -1.2).")
-    return yhat, df_proc, feature_names
+def train_model(df, n_lags, min_train=300, random_state=42):
+    # Construir features: close_pct + lags
+    df_feat = add_pct_and_lags(df, base_col="close", n_lags=n_lags)
+    feature_names = [f"close_pct_lag{i}" for i in range(1, n_lags+1)]
+    X, y = build_supervised(df_feat, feature_names)
+    if len(X) < min_train:
+        min_train = max(50, int(len(X) * 0.7))
 
-st.title("Predicción de % de cambio (siguiente período) — DecisionTreeRegressor con feedback")
-artifact = load_artifact()
+    # Entrenamiento simple (fit a todo el histórico salvo la última fila para tener test mínimo)
+    split = max(min_train, len(X)-1)
+    Xtr, ytr = X.iloc[:split], y[:split]
+    Xte, yte = X.iloc[split:], y[split:]
+
+    reg = DecisionTreeRegressor(random_state=random_state, min_samples_leaf=5)
+    reg.fit(Xtr, ytr)
+
+    # Métricas
+    if len(Xte) > 0:
+        yhat = reg.predict(Xte)
+        mae  = mean_absolute_error(yte, yhat)
+        mse  = mean_squared_error(yte, yhat)
+        rmse = np.sqrt(mse)
+        r2   = r2_score(yte, yhat) if len(yte)>1 else float("nan")
+    else:
+        mae = mse = rmse = r2 = float("nan")
+
+    artifact = {
+        "model": reg,
+        "feature_names": feature_names,
+        "n_lags": n_lags,
+        "base_features": BASE_FEATURES,
+    }
+    return artifact, {"mae": mae, "rmse": rmse, "r2": r2}, df_feat
 
 with st.sidebar:
-    st.header("Datos de entrada")
-    up = st.file_uploader("Subí CSV (open_time, open, high, low, close, volume, ...)", type=["csv"])
-    n_recent = st.number_input("Usar últimos N registros", 200, 20000, 400, step=50)
-    st.divider()
-    st.header("Feedback (opcional)")
-    last_real = st.text_input("Retorno real del último día (en %, ej: 0.8 o -1.2).")
-    btn_predict = st.button("Predecir siguiente período")
+    st.header("Datos")
+    up = st.file_uploader("CSV Binance (open_time, open, high, low, close, volume...)", type=["csv"])
+    n_lags = st.number_input("N° de lags de retornos (close_pct)", 2, 20, N_LAGS_DEFAULT, 1)
+    btn_train = st.button("Entrenar modelo")
 
-df = load_df(up)
+df = load_csv(up)
 
-tab1, tab2 = st.tabs(["Exploración", "Predicción"])
+tab1, tab2, tab3 = st.tabs(["Explorar", "Entrenar", "Predecir"])
 
 with tab1:
-    st.subheader("Exploración rápida")
-    st.dataframe(df.tail(10))
-    chart = alt.Chart(df.tail(200)).mark_line().encode(x="date:T", y=alt.Y("close:Q", title="Close")).properties(height=280)
-    st.altair_chart(chart, use_container_width=True)
+    st.subheader("Exploración")
+    st.write(df.tail(8))
+    st.altair_chart(
+        alt.Chart(df.tail(300)).mark_line().encode(x="date:T", y=alt.Y("close:Q", title="Close")).properties(height=280),
+        use_container_width=True
+    )
 
 with tab2:
-    if btn_predict:
-        try:
-            df_recent = df.tail(int(n_recent)).copy()
-            yhat, df_proc, feat_names = next_prediction(df_recent, artifact, last_real)
+    st.subheader("Entrenamiento")
+    if btn_train:
+        artifact, metrics, df_feat = train_model(df, int(n_lags))
+        st.session_state["artifact"] = artifact
+        st.session_state["df_train"] = df_feat
+        st.success(f"Entrenado. MAE={metrics['mae']:.6f} | RMSE={metrics['rmse']:.6f} | R2={metrics['r2']:.4f}")
+        st.caption("El modelo usa retornos de close (close_pct) y lags 1..N.")
+        st.write("Features:", artifact["feature_names"])
+    else:
+        st.info("Ajustá N° de lags y presioná **Entrenar modelo**.")
+
+with tab3:
+    st.subheader("Predicción del siguiente período")
+    if "artifact" not in st.session_state:
+        st.warning("Primero entrená el modelo en la pestaña **Entrenar**.")
+    else:
+        # Inputs de un nuevo día (OHLCV)
+        st.write("Ingresá el **nuevo día** (se agregará al histórico para formar los lags):")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            new_open = st.number_input("Open", value=float(df["open"].iloc[-1]), format="%.6f")
+            new_high = st.number_input("High", value=float(df["high"].iloc[-1]), format="%.6f")
+        with col2:
+            new_low  = st.number_input("Low", value=float(df["low"].iloc[-1]), format="%.6f")
+            new_close= st.number_input("Close", value=float(df["close"].iloc[-1]), format="%.6f")
+        with col3:
+            new_vol  = st.number_input("Volume", value=float(df["volume"].iloc[-1]), format="%.6f")
+
+        if st.button("Predecir próximo retorno (%)"):
+            # 1) Append new row to last date+1
+            df_new = df.copy()
+            next_date = df_new["date"].iloc[-1] + pd.Timedelta(days=1)
+            row = {
+                "symbol": df_new["symbol"].iloc[-1] if "symbol" in df_new.columns else "ASSET",
+                "interval": df_new["interval"].iloc[-1] if "interval" in df_new.columns else "1d",
+                "open_time": int(next_date.value/1e6),
+                "open": new_open, "high": new_high, "low": new_low, "close": new_close, "volume": new_vol,
+                "date": next_date,
+            }
+            df_new = pd.concat([df_new, pd.DataFrame([row])], ignore_index=True)
+
+            # 2) Rebuild features and take last row
+            n_lags = st.session_state["artifact"]["n_lags"]
+            df_feat = add_pct_and_lags(df_new, base_col="close", n_lags=n_lags)
+            fnames = st.session_state["artifact"]["feature_names"]
+            Xi = df_feat[fnames].dropna().reset_index(drop=True).iloc[[-1]]
+
+            # 3) Predict
+            model = st.session_state["artifact"]["model"]
+            yhat = float(model.predict(Xi)[0])
             st.success(f"Predicción retorno próximo período: **{yhat*100:.3f}%**")
-            ctx = df_proc.tail(60)[["date","close"]].copy()
+
+            # Contexto visual
+            ctx = df_new.tail(60)[["date","close"]].copy()
             ctx["predicted_next_close"] = np.nan
             ctx.iloc[-1, ctx.columns.get_loc("predicted_next_close")] = ctx["close"].iloc[-1]*(1.0 + yhat)
-            base = alt.Chart(ctx).encode(x="date:T").properties(height=280)
-            real_line = base.mark_line().encode(y=alt.Y("close:Q", title="Close"))
-            pred_point = base.mark_point(size=80).encode(y="predicted_next_close:Q", tooltip=["date:T","predicted_next_close:Q"])
-            st.altair_chart(alt.layer(real_line, pred_point), use_container_width=True)
-            with st.expander("Detalles técnicos"):
-                st.write("Features usadas por el modelo (orden exacto):")
-                st.code(feat_names)
-        except Exception as e:
-            st.error(f"No pude predecir: {e}")
-    else:
-        st.info("Cargá un CSV o usá el demo y presioná *Predecir*.")
+            base = alt.Chart(ctx).encode(x="date:T").properties(height=300)
+            st.altair_chart(alt.layer(
+                base.mark_line().encode(y=alt.Y("close:Q", title="Close")),
+                base.mark_point(size=80).encode(y="predicted_next_close:Q", tooltip=["date:T","predicted_next_close:Q"])
+            ), use_container_width=True)

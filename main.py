@@ -66,6 +66,11 @@ def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedb
     IMPORTANTE: Replicar el preprocesamiento exacto del entrenamiento (3_v3.py)
     """
     df = df_raw.copy()
+    
+    # DEBUG: Verificar que recibimos la fila manual
+    import streamlit as st
+    st.write(f"**🔧 ensure_feature_names recibió {len(df_raw)} filas**")
+    st.write(f"**Close de las últimas 2 filas recibidas: {df_raw['close'].tail(2).values if 'close' in df_raw.columns else 'N/A'}**")
 
     # PASO 1: Calcular todos los _pct necesarios (multiplicar por 100 como en el entrenamiento!)
     for col_base in ["open", "high", "low", "close"]:
@@ -287,6 +292,7 @@ with tab2:
                 
                 # DEBUG: Mostrar las últimas filas ANTES de calcular features
                 with st.expander("🔍 DEBUG: Últimas 3 filas ANTES de calcular features", expanded=True):
+                    st.write(f"**Total de filas en df_recent DESPUÉS de agregar manual: {len(df_recent)}**")
                     st.write("**Datos raw (OHLCV) de las últimas 3 filas:**")
                     debug_cols = ["date", "open", "high", "low", "close", "volume"]
                     available_cols = [c for c in debug_cols if c in df_recent.columns]
@@ -298,6 +304,7 @@ with tab2:
                     st.write(f"- Low manual: {m_low}")
                     st.write(f"- Close manual: {m_close}")
                     st.write(f"- Volume manual: {m_vol}")
+                    st.write(f"- Close de la última fila: {df_recent['close'].iloc[-1]}")
                     st.write(f"- Close anterior (del CSV): {df_recent['close'].iloc[-2]}")
                     st.write(f"- % cambio esperado: {((m_close - df_recent['close'].iloc[-2]) / df_recent['close'].iloc[-2] * 100):.6f}%")
 

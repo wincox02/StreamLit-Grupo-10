@@ -256,6 +256,22 @@ with tab2:
                     "date": next_date,
                 }
                 df_recent = pd.concat([df_recent, pd.DataFrame([last])], ignore_index=True)
+                
+                # DEBUG: Mostrar las últimas filas ANTES de calcular features
+                with st.expander("🔍 DEBUG: Últimas 3 filas ANTES de calcular features", expanded=True):
+                    st.write("**Datos raw (OHLCV) de las últimas 3 filas:**")
+                    debug_cols = ["date", "open", "high", "low", "close", "volume"]
+                    available_cols = [c for c in debug_cols if c in df_recent.columns]
+                    st.dataframe(df_recent[available_cols].tail(3))
+                    
+                    st.write("**Verificación de valores manuales ingresados:**")
+                    st.write(f"- Open manual: {m_open}")
+                    st.write(f"- High manual: {m_high}")
+                    st.write(f"- Low manual: {m_low}")
+                    st.write(f"- Close manual: {m_close}")
+                    st.write(f"- Volume manual: {m_vol}")
+                    st.write(f"- Close anterior (del CSV): {df_recent['close'].iloc[-2]}")
+                    st.write(f"- % cambio esperado: {((m_close - df_recent['close'].iloc[-2]) / df_recent['close'].iloc[-2] * 100):.6f}%")
 
             # Crear placeholder para mostrar debug antes de predecir
             debug_placeholder = st.empty()

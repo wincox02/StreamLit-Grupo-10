@@ -11,67 +11,59 @@ st.title("Predicción de % de cambio (siguiente período) — DecisionTreeRegres
 # ---------- Carga del artefacto ----------
 @st.cache_resource
 def load_artifact(path="models/model_feedback.pkl"):
-    return joblib.load(path)
+    art = joblib.load(path)
+    # HARD REQUIREMENT: deben existir feature_names
+    feat = art.get("feature_names", None)
+    if feat is None and hasattr(art["model"], "feature_names_in_"):
+        feat = list(art["model"].feature_names_in_)
+        art["feature_names"] = feat  # normalizamos dentro del artefacto en memoria
+    if art.get("feature_names", None) is None:
+        st.error("El artefacto no trae 'feature_names' y el modelo no expone 'feature_names_in_'. "
+                 "No puedo garantizar coherencia de features. Volvé a exportar el modelo con feature_names.")
+        st.stop()
+    return art
 
 artifact = load_artifact()
 model = artifact["model"]
+FEATURE_NAMES = artifact["feature_names"]      # <- usaremos SIEMPRE estas
 BASE_FEATURES = artifact.get("base_features", ["close","volume","high","low","open"])
 N_LAGS = int(artifact.get("n_lags", 5))
 USE_FEEDBACK = bool(artifact.get("use_feedback", True))
+SCALER_Y = artifact.get("scaler_y", None)     # opcional
 
 # ---------- Utilidades ----------
-def load_df(uploaded):
-    """Carga CSV (o demo) y normaliza fecha."""
-    if uploaded is not None:
-        df = pd.read_csv(uploaded)
-    else:
-        st.info("Usando muestra de datos demo (data/sample_binance.csv).")
-        df = pd.read_csv("data/sample_binance.csv")
-
-    # Normalizar fecha
-    if "open_time" in df.columns:
-        # Si viene en ms (int)
-        if np.issubdtype(type(df["open_time"].iloc[0]), np.integer):
-            df["date"] = pd.to_datetime(df["open_time"], unit="ms")
-        else:
-            df["date"] = pd.to_datetime(df["open_time"])
-    elif "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
-    else:
-        raise ValueError("No encuentro 'open_time' o 'date' en el CSV.")
-
-    return df.sort_values("date").reset_index(drop=True)
-
 def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedback=True):
     """
     Construye EXACTAMENTE las columnas 'feature_names' que el modelo vio en fit.
-    - Si el modelo usó close_pct y sus lags, las crea.
-    - Si usó lags de precio (close_lagN, open_lagN, etc.), también.
-    - Añade prev_pred/prev_err si el modelo los espera (feedback).
     """
     df = df_raw.copy()
 
-    # 1) Derivados de retornos si el modelo los usa
-    if any(name.startswith("close_pct") for name in feature_names):
+    # Derivados de retornos si el modelo los usa
+    if any(name.startswith("close_pct") for name in feature_names) or ("close_pct" in feature_names):
         df["close_pct"] = df["close"].pct_change()
         for l in range(1, n_lags + 1):
-            df[f"close_pct_lag{l}"] = df["close_pct"].shift(l)
+            col = f"close_pct_lag{l}"
+            if col in feature_names:
+                df[col] = df["close_pct"].shift(l)
 
-    # 2) Lags de features base si el modelo los usa
+    # Lags de features base solo si aparecen en feature_names
     for f in base_features:
         if any(name.startswith(f"{f}_lag") for name in feature_names):
+            if f not in df.columns:
+                raise KeyError(f"Falta la columna '{f}' en el dataset de entrada.")
             for l in range(1, n_lags + 1):
-                if f not in df.columns:
-                    raise KeyError(f"Falta la columna '{f}' en el dataset de entrada.")
-                df[f"{f}_lag{l}"] = df[f].shift(l)
+                col = f"{f}_lag{l}"
+                if col in feature_names:
+                    df[col] = df[f].shift(l)
 
-    # 3) Última fila con lags completos
+    # Última fila con lags completos
     df_lags = df.dropna().reset_index(drop=True)
     if df_lags.empty:
-        raise ValueError("No hay suficientes filas para generar lags. Aumentá 'Usar últimos N registros'.")
+        raise ValueError("No hay suficientes filas para generar lags. Aumentá 'Usar últimos N registros' o quitá el manual si no alcanza.")
+
     Xi = df_lags.iloc[[-1]].copy()
 
-    # 4) Feedback
+    # Feedback
     if use_feedback:
         if "prev_pred" in feature_names:
             Xi.loc[:, "prev_pred"] = st.session_state.get("prev_pred_streamlit", 0.0)
@@ -80,15 +72,48 @@ def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedb
             prev_real = st.session_state.get("prev_real_streamlit", 0.0)
             Xi.loc[:, "prev_err"] = prev_pred - prev_real
 
-    # 5) Asegurar mismas columnas y orden EXACTO (fix de "Columns must be same length as key")
+    # Asegurar mismas columnas y orden exacto
     for col in feature_names:
         if col not in Xi.columns:
-            Xi.loc[:, col] = 0.0  # fallback seguro para columnas ausentes
-    # quita duplicados conservando orden si los hubiera
-    feature_names_unique = list(dict.fromkeys(feature_names))
-    Xi = Xi.loc[:, feature_names_unique]
+            Xi.loc[:, col] = 0.0
+    Xi = Xi.loc[:, list(dict.fromkeys(feature_names))]  # quita duplicados si los hubiese
 
-    return Xi, df
+    return Xi, df_lags
+
+def next_prediction(df_recent, last_real_input, debug=False):
+    # Usar SIEMPRE las features reales del fit:
+    feature_names = FEATURE_NAMES
+
+    Xi, df_proc = ensure_feature_names(
+        df_raw=df_recent,
+        feature_names=feature_names,
+        base_features=BASE_FEATURES,
+        n_lags=N_LAGS,
+        use_feedback=USE_FEEDBACK
+    )
+
+    if debug:
+        st.write("🔎 **Debug Xi (features usadas en predict):**")
+        st.dataframe(Xi.T)
+
+    # Predicción (respetando un posible scaler_y del target)
+    yhat = float(model.predict(Xi)[0])
+    if SCALER_Y is not None:
+        # si el y durante el fit fue escalado, invertimos
+        import numpy as np
+        yhat = float(SCALER_Y.inverse_transform(np.array([[yhat]])).ravel()[0])
+
+    # Actualizar feedback si nos dieron el real del último día (en %)
+    if USE_FEEDBACK and last_real_input and str(last_real_input).strip():
+        try:
+            real_pct = float(str(last_real_input).replace(",", "."))
+            st.session_state["prev_real_streamlit"] = real_pct / 100.0
+            st.session_state["prev_pred_streamlit"] = yhat
+        except:
+            st.warning("No pude interpretar el retorno real ingresado (usa 0.8 ó -1.2).")
+
+    return yhat, df_proc, feature_names
+
 
 def next_prediction(df_recent, last_real_input):
     """Arma Xi con las mismas features del fit y predice el próximo retorno."""

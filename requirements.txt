@@ -1,15 +1,6 @@
-# Requerimientos inferidos desde 3_v3_cuartaentrega_feedback_v2.py
-# Paquetes principales necesarios para ejecutar el script
 streamlit
+pandas
+numpy
+scikit-learn
+altair
 joblib
-pandas>=2.0
-numpy>=1.24
-matplotlib>=3.5
-scikit-learn>=1.2
-altair>=4.2
-pytz>=2023.3
-
-# Notas:
-# - `pandas`, `numpy` y `scikit-learn` son imprescindibles.
-# - `altair` se usa para visualizaciones interactivas (en notebooks puede requerir extensiones).
-# - Si ejecutas en Colab/Jupyter, asegúrate de tener instalado `notebook`/`jupyterlab` (opcional).

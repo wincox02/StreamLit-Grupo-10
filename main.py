@@ -117,22 +117,40 @@ def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedb
                 if col in feature_names:
                     df[col] = df[f].shift(l)
 
-    # Última fila con lags completos
-    # DEBUG: Ver qué columnas tienen NaN en la última fila ANTES de dropna
+    # DEBUG COMPLETO: Ver estado antes y después de dropna
+    import streamlit as st
+    
+    st.write("---")
+    st.write("### 🔍 DEBUG DETALLADO DEL PROCESAMIENTO")
+    
+    st.write(f"**1. Total de filas en df_raw:** {len(df_raw)}")
+    st.write(f"**2. Total de filas después de calcular features:** {len(df)}")
+    
+    # Mostrar últimas 3 filas con TODAS las columnas calculadas
+    st.write("**3. Últimas 3 filas CON features calculadas (antes de dropna):**")
+    display_cols = ["close"] + list(feature_names)
+    available_display = [c for c in display_cols if c in df.columns]
+    st.dataframe(df[available_display].tail(3))
+    
+    # Ver NaNs en última fila
     ultima_fila_antes = df.iloc[-1][feature_names]
     nans_en_ultima = ultima_fila_antes.isna()
+    st.write(f"**4. NaNs en la última fila:** {nans_en_ultima.sum()} de {len(feature_names)}")
     if nans_en_ultima.any():
-        import streamlit as st
-        st.warning(f"⚠️ La última fila tiene {nans_en_ultima.sum()} valores NaN en las features. "
-                   f"Columnas con NaN: {list(nans_en_ultima[nans_en_ultima].index)}")
-        st.write("**Valores de la última fila ANTES de dropna:**")
-        st.dataframe(pd.DataFrame(ultima_fila_antes).T)
+        st.error(f"⚠️ Columnas con NaN: {list(nans_en_ultima[nans_en_ultima].index)}")
+        st.write("Por eso se descarta esta fila y se usa la anterior!")
     
+    # Después de dropna
     df_lags = df.dropna().reset_index(drop=True)
     if df_lags.empty:
         raise ValueError("No hay suficientes filas para generar lags. Aumentá 'Usar últimos N registros' o quitá el manual si no alcanza.")
-
+    
+    st.write(f"**5. Total de filas DESPUÉS de dropna:** {len(df_lags)}")
+    st.write(f"**6. Close de la última fila usada:** {df_lags['close'].iloc[-1] if 'close' in df_lags.columns else 'N/A'}")
+    
     Xi = df_lags.iloc[[-1]].copy()
+    
+    st.write("---")
 
     # Feedback
     if use_feedback:

@@ -118,6 +118,16 @@ def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedb
                     df[col] = df[f].shift(l)
 
     # Última fila con lags completos
+    # DEBUG: Ver qué columnas tienen NaN en la última fila ANTES de dropna
+    ultima_fila_antes = df.iloc[-1][feature_names]
+    nans_en_ultima = ultima_fila_antes.isna()
+    if nans_en_ultima.any():
+        import streamlit as st
+        st.warning(f"⚠️ La última fila tiene {nans_en_ultima.sum()} valores NaN en las features. "
+                   f"Columnas con NaN: {list(nans_en_ultima[nans_en_ultima].index)}")
+        st.write("**Valores de la última fila ANTES de dropna:**")
+        st.dataframe(pd.DataFrame(ultima_fila_antes).T)
+    
     df_lags = df.dropna().reset_index(drop=True)
     if df_lags.empty:
         raise ValueError("No hay suficientes filas para generar lags. Aumentá 'Usar últimos N registros' o quitá el manual si no alcanza.")

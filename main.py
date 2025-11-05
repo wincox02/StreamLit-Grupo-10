@@ -3,7 +3,7 @@ import pandas as pd, numpy as np
 import altair as alt
 import joblib, os
 
-from src.features import add_lags, prepare_supervised
+from src.features import add_lags
 
 st.set_page_config(page_title="Crypto returns – DTR feedback", layout="wide")
 

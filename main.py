@@ -117,6 +117,23 @@ def next_prediction(df_recent, last_real_input, debug=False):
         st.write("🔎 **Debug Xi (features usadas en predict):**")
         st.dataframe(Xi.T)
 
+    # PRINT DE DEBUG: verificar datos antes de la predicción
+    print("\n" + "="*60)
+    print("📊 DATOS ENVIADOS AL MODELO PARA PREDICCIÓN:")
+    print("="*60)
+    print(f"Shape: {Xi.shape}")
+    print(f"\nPrimeras columnas y valores:")
+    for col in Xi.columns[:10]:  # Mostrar primeras 10 columnas
+        print(f"  {col}: {Xi[col].values[0]:.6f}")
+    if len(Xi.columns) > 10:
+        print(f"  ... y {len(Xi.columns) - 10} columnas más")
+    print(f"\nEstadísticas rápidas:")
+    print(f"  - Valores en cero: {(Xi.values == 0).sum()} de {Xi.size}")
+    print(f"  - Min: {Xi.values.min():.6f}")
+    print(f"  - Max: {Xi.values.max():.6f}")
+    print(f"  - Mean: {Xi.values.mean():.6f}")
+    print("="*60 + "\n")
+
     # Predicción (respetando un posible scaler_y del target)
     yhat = float(model.predict(Xi)[0])
     if SCALER_Y is not None:

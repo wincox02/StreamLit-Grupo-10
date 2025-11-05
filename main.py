@@ -32,6 +32,27 @@ USE_FEEDBACK = bool(artifact.get("use_feedback", True))
 SCALER_Y = artifact.get("scaler_y", None)     # opcional
 
 # ---------- Utilidades ----------
+@st.cache_data
+def load_df(uploaded_file):
+    """Carga el CSV desde el uploader o usa uno por defecto."""
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+    else:
+        # Usar un CSV por defecto si existe
+        try:
+            df = pd.read_csv("BTCUSDT_1d_last_year.csv")
+        except:
+            st.error("No se subió archivo y no existe CSV por defecto. Subí un archivo CSV.")
+            st.stop()
+    
+    # Asegurar columna de fecha
+    if "date" not in df.columns and "open_time" in df.columns:
+        df["date"] = pd.to_datetime(df["open_time"], unit="ms")
+    elif "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    
+    return df
+
 def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedback=True):
     """
     Construye EXACTAMENTE las columnas 'feature_names' que el modelo vio en fit.

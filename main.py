@@ -101,7 +101,7 @@ def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedb
 
     return Xi, df_lags
 
-def next_prediction(df_recent, last_real_input, debug=False):
+def next_prediction(df_recent, last_real_input, debug_placeholder=None):
     # Usar SIEMPRE las features reales del fit:
     feature_names = FEATURE_NAMES
 
@@ -113,34 +113,33 @@ def next_prediction(df_recent, last_real_input, debug=False):
         use_feedback=USE_FEEDBACK
     )
 
-    if debug:
-        st.write("🔎 **Debug Xi (features usadas en predict):**")
-        st.dataframe(Xi.T)
-
-    # DEBUG: Mostrar datos antes de la predicción
-    st.write("---")
-    st.write("📊 **DATOS ENVIADOS AL MODELO:**")
-    st.write(f"**Shape:** {Xi.shape} (filas × columnas)")
-    
-    # Mostrar primeras columnas
-    st.write("**Primeras 10 columnas y sus valores:**")
-    debug_data = {}
-    for col in Xi.columns[:10]:
-        debug_data[col] = Xi[col].values[0]
-    st.json(debug_data)
-    
-    if len(Xi.columns) > 10:
-        st.caption(f"... y {len(Xi.columns) - 10} columnas más")
-    
-    # Estadísticas
-    zeros_count = (Xi.values == 0).sum()
-    total_values = Xi.size
-    st.write("**Estadísticas:**")
-    st.write(f"- Valores en cero: {zeros_count} de {total_values} ({zeros_count/total_values*100:.1f}%)")
-    st.write(f"- Mínimo: {Xi.values.min():.6f}")
-    st.write(f"- Máximo: {Xi.values.max():.6f}")
-    st.write(f"- Promedio: {Xi.values.mean():.6f}")
-    st.write("---")
+    # DEBUG: Mostrar datos antes de la predicción en un expander
+    if debug_placeholder:
+        with debug_placeholder.container():
+            with st.expander("� VER DATOS ENVIADOS AL MODELO (Debug)", expanded=True):
+                st.write(f"**Shape:** {Xi.shape[0]} fila(s) × {Xi.shape[1]} columna(s)")
+                
+                # Estadísticas generales
+                zeros_count = (Xi.values == 0).sum()
+                total_values = Xi.size
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Valores en 0", f"{zeros_count}/{total_values}")
+                col2.metric("Mínimo", f"{Xi.values.min():.6f}")
+                col3.metric("Máximo", f"{Xi.values.max():.6f}")
+                col4.metric("Promedio", f"{Xi.values.mean():.6f}")
+                
+                # Mostrar TODOS los valores en un dataframe transpuesto
+                st.write("**Todos los valores enviados al modelo:**")
+                Xi_display = Xi.T.copy()
+                Xi_display.columns = ['Valor']
+                st.dataframe(Xi_display, height=400)
+                
+                # También en formato de texto para copiar/pegar
+                st.write("**Valores en formato texto:**")
+                valores_texto = ""
+                for col in Xi.columns:
+                    valores_texto += f"{col}: {Xi[col].values[0]:.8f}\n"
+                st.text_area("Copiar valores", valores_texto, height=200)
 
     # Predicción (respetando un posible scaler_y del target)
     yhat = float(model.predict(Xi)[0])
@@ -246,8 +245,11 @@ with tab2:
                 }
                 df_recent = pd.concat([df_recent, pd.DataFrame([last])], ignore_index=True)
 
+            # Crear placeholder para mostrar debug antes de predecir
+            debug_placeholder = st.empty()
+            
             # Predecir
-            yhat, df_proc, feat_names = next_prediction(df_recent, last_real)
+            yhat, df_proc, feat_names = next_prediction(df_recent, last_real, debug_placeholder)
             st.success(f"Predicción retorno próximo período: **{yhat*100:.3f}%**")
 
             # Contexto visual: último tramo + punto de cierre predicho

@@ -117,22 +117,30 @@ def next_prediction(df_recent, last_real_input, debug=False):
         st.write("🔎 **Debug Xi (features usadas en predict):**")
         st.dataframe(Xi.T)
 
-    # PRINT DE DEBUG: verificar datos antes de la predicción
-    print("\n" + "="*60)
-    print("📊 DATOS ENVIADOS AL MODELO PARA PREDICCIÓN:")
-    print("="*60)
-    print(f"Shape: {Xi.shape}")
-    print(f"\nPrimeras columnas y valores:")
-    for col in Xi.columns[:10]:  # Mostrar primeras 10 columnas
-        print(f"  {col}: {Xi[col].values[0]:.6f}")
+    # DEBUG: Mostrar datos antes de la predicción
+    st.write("---")
+    st.write("📊 **DATOS ENVIADOS AL MODELO:**")
+    st.write(f"**Shape:** {Xi.shape} (filas × columnas)")
+    
+    # Mostrar primeras columnas
+    st.write("**Primeras 10 columnas y sus valores:**")
+    debug_data = {}
+    for col in Xi.columns[:10]:
+        debug_data[col] = Xi[col].values[0]
+    st.json(debug_data)
+    
     if len(Xi.columns) > 10:
-        print(f"  ... y {len(Xi.columns) - 10} columnas más")
-    print(f"\nEstadísticas rápidas:")
-    print(f"  - Valores en cero: {(Xi.values == 0).sum()} de {Xi.size}")
-    print(f"  - Min: {Xi.values.min():.6f}")
-    print(f"  - Max: {Xi.values.max():.6f}")
-    print(f"  - Mean: {Xi.values.mean():.6f}")
-    print("="*60 + "\n")
+        st.caption(f"... y {len(Xi.columns) - 10} columnas más")
+    
+    # Estadísticas
+    zeros_count = (Xi.values == 0).sum()
+    total_values = Xi.size
+    st.write("**Estadísticas:**")
+    st.write(f"- Valores en cero: {zeros_count} de {total_values} ({zeros_count/total_values*100:.1f}%)")
+    st.write(f"- Mínimo: {Xi.values.min():.6f}")
+    st.write(f"- Máximo: {Xi.values.max():.6f}")
+    st.write(f"- Promedio: {Xi.values.mean():.6f}")
+    st.write("---")
 
     # Predicción (respetando un posible scaler_y del target)
     yhat = float(model.predict(Xi)[0])

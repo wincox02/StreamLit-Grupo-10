@@ -31,6 +31,13 @@ N_LAGS = int(artifact.get("n_lags", 5))
 USE_FEEDBACK = bool(artifact.get("use_feedback", True))
 SCALER_Y = artifact.get("scaler_y", None)     # opcional
 
+# DEBUG: Mostrar info del modelo al cargar
+st.sidebar.info(f"**Modelo cargado:**\n- Features: {len(FEATURE_NAMES)}\n- Lags: {N_LAGS}\n- Feedback: {USE_FEEDBACK}")
+with st.sidebar.expander("🔍 Ver features del modelo"):
+    st.write("**Features esperadas por el modelo:**")
+    for i, feat in enumerate(FEATURE_NAMES, 1):
+        st.text(f"{i}. {feat}")
+
 # ---------- Utilidades ----------
 @st.cache_data
 def load_df(uploaded_file):
@@ -56,30 +63,45 @@ def load_df(uploaded_file):
 def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedback=True):
     """
     Construye EXACTAMENTE las columnas 'feature_names' que el modelo vio en fit.
+    IMPORTANTE: Replicar el preprocesamiento exacto del entrenamiento (3_v3.py)
     """
     df = df_raw.copy()
 
-    # Calcular todas las features pct_change que el modelo pueda necesitar
-    for col_base in ["open", "high", "low", "close", "volume"]:
+    # PASO 1: Calcular todos los _pct necesarios (multiplicar por 100 como en el entrenamiento!)
+    for col_base in ["open", "high", "low", "close"]:
         col_pct = f"{col_base}_pct"
         if col_pct in feature_names or any(name.startswith(col_pct) for name in feature_names):
             if col_base in df.columns:
-                df[col_pct] = df[col_base].pct_change()
-
-    # Calcular medias móviles si están en feature_names
-    if "ma3" in feature_names:
-        df["ma3"] = df["close"].rolling(window=3).mean()
-    if "ma7" in feature_names:
-        df["ma7"] = df["close"].rolling(window=7).mean()
+                df[col_pct] = df[col_base].pct_change() * 100.0  # ← MULTIPLICAR POR 100!
     
-    # Calcular volatilidad si está en feature_names
-    if "volatilidad_7" in feature_names:
-        df["volatilidad_7"] = df["close"].pct_change().rolling(window=7).std()
+    # Volumen (puede ser "volume" o "volumen")
+    for vol_name in ["volume", "volumen"]:
+        col_pct = f"{vol_name}_pct"
+        if col_pct in feature_names:
+            if vol_name in df.columns:
+                df[col_pct] = df[vol_name].pct_change() * 100.0
 
-    # Lags de retornos
-    if any(name.startswith("close_pct") for name in feature_names) or ("close_pct" in feature_names):
+    # PASO 2: Medias móviles sobre close_pct (no sobre close!)
+    if "ma3" in feature_names:
         if "close_pct" not in df.columns:
-            df["close_pct"] = df["close"].pct_change()
+            df["close_pct"] = df["close"].pct_change() * 100.0
+        df["ma3"] = df["close_pct"].rolling(window=3).mean()
+    
+    if "ma7" in feature_names:
+        if "close_pct" not in df.columns:
+            df["close_pct"] = df["close"].pct_change() * 100.0
+        df["ma7"] = df["close_pct"].rolling(window=7).mean()
+    
+    # PASO 3: Volatilidad sobre close_pct
+    if "volatilidad_7" in feature_names:
+        if "close_pct" not in df.columns:
+            df["close_pct"] = df["close"].pct_change() * 100.0
+        df["volatilidad_7"] = df["close_pct"].rolling(window=7).std()
+
+    # PASO 4: Lags de close_pct
+    if any(name.startswith("close_pct_lag") for name in feature_names):
+        if "close_pct" not in df.columns:
+            df["close_pct"] = df["close"].pct_change() * 100.0
         for l in range(1, n_lags + 1):
             col = f"close_pct_lag{l}"
             if col in feature_names:
@@ -160,17 +182,22 @@ def next_prediction(df_recent, last_real_input, debug_placeholder=None):
                 st.text_area("Copiar valores", valores_texto, height=200)
 
     # Predicción (respetando un posible scaler_y del target)
-    yhat = float(model.predict(Xi)[0])
+    yhat_scaled = float(model.predict(Xi)[0])
+    
+    # El modelo predice en escala del StandardScaler, hay que desescalar
     if SCALER_Y is not None:
-        # si el y durante el fit fue escalado, invertimos
-        import numpy as np
-        yhat = float(SCALER_Y.inverse_transform(np.array([[yhat]])).ravel()[0])
+        yhat = float(SCALER_Y.inverse_transform(np.array([[yhat_scaled]])).ravel()[0])
+    else:
+        yhat = yhat_scaled
+    
+    # yhat ahora está en escala de % (ya multiplicado por 100 en el preprocesamiento)
 
     # Actualizar feedback si nos dieron el real del último día (en %)
     if USE_FEEDBACK and last_real_input and str(last_real_input).strip():
         try:
             real_pct = float(str(last_real_input).replace(",", "."))
-            st.session_state["prev_real_streamlit"] = real_pct / 100.0
+            # real_pct ya está en escala %, igual que yhat
+            st.session_state["prev_real_streamlit"] = real_pct
             st.session_state["prev_pred_streamlit"] = yhat
         except:
             st.warning("No pude interpretar el retorno real ingresado (usa 0.8 ó -1.2).")
@@ -235,12 +262,14 @@ with tab2:
             
             # Predecir
             yhat, df_proc, feat_names = next_prediction(df_recent, last_real, debug_placeholder)
-            st.success(f"Predicción retorno próximo período: **{yhat*100:.3f}%**")
+            # yhat ya está en escala de % (el modelo predice directamente en %)
+            st.success(f"Predicción retorno próximo período: **{yhat:.3f}%**")
 
             # Contexto visual: último tramo + punto de cierre predicho
             ctx = df_proc.tail(60)[["date","close"]].copy()
             ctx["predicted_next_close"] = np.nan
-            ctx.iloc[-1, ctx.columns.get_loc("predicted_next_close")] = ctx["close"].iloc[-1]*(1.0 + yhat)
+            # yhat está en %, hay que dividir por 100 para usarlo como factor
+            ctx.iloc[-1, ctx.columns.get_loc("predicted_next_close")] = ctx["close"].iloc[-1]*(1.0 + yhat/100.0)
 
             base = alt.Chart(ctx).encode(x="date:T").properties(height=300)
             real_line = base.mark_line().encode(y=alt.Y("close:Q", title="Close"))

@@ -17,7 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # Para escalar el target
@@ -66,10 +66,26 @@ for k in range(1, N_LAGS+1):
 # Medias móviles y volatilidad
 df["ma3"] = df["close_pct"].rolling(3).mean()
 df["ma7"] = df["close_pct"].rolling(7).mean()
+df["ma14"] = df["close_pct"].rolling(14).mean()  # Media móvil más larga
 df["volatilidad_7"] = df["close_pct"].rolling(7).std()
+df["volatilidad_14"] = df["close_pct"].rolling(14).std()  # Volatilidad más larga
 
-# Feature set base
-feature_cols = ["open_pct","high_pct","low_pct","close_pct","ma3","ma7","volatilidad_7"]
+# Momentum y tendencia
+df["momentum_3"] = df["close_pct"] - df["close_pct"].shift(3)  # Diferencia de 3 períodos
+df["momentum_7"] = df["close_pct"] - df["close_pct"].shift(7)  # Diferencia de 7 períodos
+
+# RSI simplificado (indicador de sobrecompra/sobreventa)
+delta = df["close_pct"]
+gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+rs = gain / (loss + 1e-10)  # Evitar división por cero
+df["rsi_14"] = 100 - (100 / (1 + rs))
+
+# Feature set base (agregamos las nuevas features)
+feature_cols = ["open_pct","high_pct","low_pct","close_pct",
+                "ma3","ma7","ma14",
+                "volatilidad_7","volatilidad_14",
+                "momentum_3","momentum_7","rsi_14"]
 if vcol:
     feature_cols.append(f"{vcol}_pct")
 
@@ -111,37 +127,30 @@ Incluimos ahora un **RandomForestRegressor**.
 tscv = TimeSeriesSplit(n_splits=5)
 
 models = {
-    "LinearRegression": {
-        "pipe": Pipeline([("scaler", StandardScaler()), ("model", LinearRegression())]),
-        "param_grid": {}
-    },
-    "KNNRegressor": {
-        "pipe": Pipeline([("scaler", StandardScaler()), ("model", KNeighborsRegressor())]),
-        "param_grid": {
-            "model__n_neighbors": [3, 5, 7, 9],
-            "model__weights": ["uniform","distance"]
-        }
-    },
-    # "DecisionTreeRegressor": {
-    #     "pipe": Pipeline([("model", DecisionTreeRegressor(random_state=42))]),
-    #     "param_grid": {
-    #         "model__max_depth": [3, 5, 7, 10, None],
-    #         "model__min_samples_leaf": [1, 2, 4]
-    #     }
-    # },
     "DecisionTreeRegressor": {
     "pipe": Pipeline([("model", DecisionTreeRegressor(random_state=42))]),
     "param_grid": {
-        "model__max_depth": [8, 12, 20, None],
-        "model__min_samples_leaf": [1, 2],
-        "model__min_samples_split": [2, 4]
+        "model__max_depth": [15, 20, 25, None],  # Árboles más profundos
+        "model__min_samples_leaf": [1, 2, 3],    # Permitir hojas más pequeñas
+        "model__min_samples_split": [2, 3, 5],   # Más flexible para dividir
+        "model__min_impurity_decrease": [0.0, 0.001]  # Control de crecimiento
         }
     },
     "RandomForestRegressor": {
         "pipe": Pipeline([("model", RandomForestRegressor(random_state=42, n_jobs=-1))]),
         "param_grid": {
-            "model__n_estimators": [200, 400],
-            "model__max_depth": [5, 10, 15, None],
+            "model__n_estimators": [100, 200, 300],  # Más árboles
+            "model__max_depth": [10, 15, 20, None],  # Árboles más profundos
+            "model__min_samples_leaf": [1, 2, 3],
+            "model__max_features": ["sqrt", "log2", 0.5]  # Variedad en features por split
+        }
+    },
+    "GradientBoostingRegressor": {
+        "pipe": Pipeline([("model", GradientBoostingRegressor(random_state=42))]),
+        "param_grid": {
+            "model__n_estimators": [100, 200, 300],
+            "model__max_depth": [3, 5, 7],
+            "model__learning_rate": [0.01, 0.05, 0.1],
             "model__min_samples_leaf": [1, 2, 4]
         }
     }
@@ -194,49 +203,93 @@ for name, cfg in models.items():
 res_df = pd.DataFrame(results).sort_values("test_mae")
 res_df
 
-"""## 5) Curva Real vs Predicción del mejor modelo
+"""## 5) Curva Real vs Predicción del mejor modelo (COMENTADO PARA NO DEMORAR)
 
 """
 
-best_name = res_df.iloc[0]["modelo"]
-best_model = best_estimators[best_name]
+# best_name = res_df.iloc[0]["modelo"]
+# best_model = best_estimators[best_name]
 
-preds_scaled = best_model.predict(X_test)
-preds = scaler_y.inverse_transform(np.array(preds_scaled).reshape(-1,1)).ravel()
+# preds_scaled = best_model.predict(X_test)
+# preds = scaler_y.inverse_transform(np.array(preds_scaled).reshape(-1,1)).ravel()
 
-plt.figure(figsize=(10,4))
-plt.plot(y_test.values, label="Real")
-plt.plot(preds, label=f"Predicción ({best_name})")
-plt.title("Cambio % de close (siguiente período)")
-plt.legend()
-plt.xlabel("Observación (orden temporal)")
-plt.ylabel("%")
-plt.tight_layout()
-plt.show()
+# plt.figure(figsize=(10,4))
+# plt.plot(y_test.values, label="Real")
+# plt.plot(preds, label=f"Predicción ({best_name})")
+# plt.title("Cambio % de close (siguiente período)")
+# plt.legend()
+# plt.xlabel("Observación (orden temporal)")
+# plt.ylabel("%")
+# plt.tight_layout()
+# plt.show()
 
 res_df
 
-# Aseguramos los modelos en orden
-model_names = ["LinearRegression", "KNNRegressor", "DecisionTreeRegressor", "RandomForestRegressor"]
+# VISUALIZACIÓN MÚLTIPLE COMENTADA (descomentar si querés ver todos los modelos)
+# model_names = ["DecisionTreeRegressor", "RandomForestRegressor", "GradientBoostingRegressor"]
+# fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True, sharey=True)
 
-# Creamos una figura con 4 subgráficos verticales
-fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True, sharey=True)
+# for i, name in enumerate(model_names):
+#     if name not in best_estimators:
+#         continue
 
-for i, name in enumerate(model_names):
-    if name not in best_estimators:
-        continue  # si algún modelo no se entrenó, lo salteamos
+#     model = best_estimators[name]
+#     preds_scaled = model.predict(X_test)
+#     preds = scaler_y.inverse_transform(np.array(preds_scaled).reshape(-1,1)).ravel()
 
-    model = best_estimators[name]
-    preds_scaled = model.predict(X_test)
-    preds = scaler_y.inverse_transform(np.array(preds_scaled).reshape(-1,1)).ravel()
+#     ax = axes[i]
+#     ax.plot(y_test.values, label="Real", linewidth=1.8)
+#     ax.plot(preds, label=f"Predicción ({name})", linewidth=1.5)
+#     ax.set_title(f"{name} – Cambio % de close (siguiente período)")
+#     ax.set_ylabel("%")
+#     ax.legend(loc="upper right")
 
-    ax = axes[i]
-    ax.plot(y_test.values, label="Real", linewidth=1.8)
-    ax.plot(preds, label=f"Predicción ({name})", linewidth=1.5)
-    ax.set_title(f"{name} – Cambio % de close (siguiente período)")
-    ax.set_ylabel("%")
-    ax.legend(loc="upper right")
+# axes[-1].set_xlabel("Observación (orden temporal)")
+# plt.tight_layout()
+# plt.show()
 
-axes[-1].set_xlabel("Observación (orden temporal)")
-plt.tight_layout()
-plt.show()
+"""## 6) Exportar el mejor modelo con metadata completa"""
+
+import joblib
+
+# Obtener el mejor modelo
+best_name = res_df.iloc[0]["modelo"]
+best_model = best_estimators[best_name]
+
+# Extraer solo el modelo (sin el pipeline de scaling si existe)
+if hasattr(best_model, 'named_steps'):
+    final_model = best_model.named_steps['model']
+else:
+    final_model = best_model
+
+# Crear artefacto completo con TODA la información necesaria
+artifact = {
+    "model": final_model,
+    "model_name": best_name,
+    "feature_names": feature_cols,  # Lista ordenada de features
+    "base_features": ["close", "volume", "high", "low", "open"],
+    "n_lags": N_LAGS,
+    "use_feedback": False,  # Si usas feedback, cambiar a True
+    "scaler_y": scaler_y,   # Scaler del target
+    "metrics": {
+        "test_mae": res_df.iloc[0]["test_mae"],
+        "test_rmse": res_df.iloc[0]["test_rmse"],
+        "test_r2": res_df.iloc[0]["test_r2"]
+    },
+    "best_params": res_df.iloc[0]["mejores_params"]
+}
+
+# Guardar
+joblib.dump(artifact, "models/model_feedback.pkl")
+print(f"✅ Modelo {best_name} guardado en models/model_feedback.pkl")
+print(f"   Features: {len(feature_cols)}")
+print(f"   Test MAE: {artifact['metrics']['test_mae']:.4f}%")
+print(f"   Test R²: {artifact['metrics']['test_r2']:.4f}")
+
+# Info del árbol si es DecisionTree o RandomForest
+if hasattr(final_model, 'tree_'):
+    print(f"   Árbol - Hojas: {final_model.tree_.n_leaves}, Profundidad: {final_model.tree_.max_depth}")
+elif hasattr(final_model, 'estimators_'):
+    if len(final_model.estimators_) > 0 and hasattr(final_model.estimators_[0], 'tree_'):
+        avg_leaves = np.mean([tree.tree_.n_leaves for tree in final_model.estimators_])
+        print(f"   Random Forest - Árboles: {len(final_model.estimators_)}, Promedio hojas: {avg_leaves:.0f}")

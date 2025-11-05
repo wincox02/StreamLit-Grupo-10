@@ -159,39 +159,6 @@ def next_prediction(df_recent, last_real_input, debug_placeholder=None):
 
     return yhat, df_proc, feature_names
 
-
-def next_prediction(df_recent, last_real_input):
-    """Arma Xi con las mismas features del fit y predice el próximo retorno."""
-    # Detectar lista exacta de features vistas en fit
-    feature_names = artifact.get("feature_names", None)
-    if feature_names is None and hasattr(model, "feature_names_in_"):
-        feature_names = list(model.feature_names_in_)
-    if feature_names is None:
-        # Último recurso: asumir retornos con lags
-        feature_names = [f"close_pct_lag{i}" for i in range(1, N_LAGS + 1)]
-
-    Xi, df_proc = ensure_feature_names(
-        df_raw=df_recent,
-        feature_names=feature_names,
-        base_features=BASE_FEATURES,
-        n_lags=N_LAGS,
-        use_feedback=USE_FEEDBACK
-    )
-
-    # Predicción
-    yhat = float(model.predict(Xi)[0])
-
-    # Actualizar feedback si nos dieron el real del último día (en %)
-    if USE_FEEDBACK and last_real_input and str(last_real_input).strip():
-        try:
-            real_pct = float(str(last_real_input).replace(",", "."))
-            st.session_state["prev_real_streamlit"] = real_pct / 100.0
-            st.session_state["prev_pred_streamlit"] = yhat
-        except:
-            st.warning("No pude interpretar el retorno real ingresado (usa 0.8 ó -1.2).")
-
-    return yhat, df_proc, feature_names
-
 # ---------- UI ----------
 with st.sidebar:
     st.header("Datos de entrada")

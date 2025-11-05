@@ -59,9 +59,27 @@ def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedb
     """
     df = df_raw.copy()
 
-    # Derivados de retornos si el modelo los usa
+    # Calcular todas las features pct_change que el modelo pueda necesitar
+    for col_base in ["open", "high", "low", "close", "volume"]:
+        col_pct = f"{col_base}_pct"
+        if col_pct in feature_names or any(name.startswith(col_pct) for name in feature_names):
+            if col_base in df.columns:
+                df[col_pct] = df[col_base].pct_change()
+
+    # Calcular medias móviles si están en feature_names
+    if "ma3" in feature_names:
+        df["ma3"] = df["close"].rolling(window=3).mean()
+    if "ma7" in feature_names:
+        df["ma7"] = df["close"].rolling(window=7).mean()
+    
+    # Calcular volatilidad si está en feature_names
+    if "volatilidad_7" in feature_names:
+        df["volatilidad_7"] = df["close"].pct_change().rolling(window=7).std()
+
+    # Lags de retornos
     if any(name.startswith("close_pct") for name in feature_names) or ("close_pct" in feature_names):
-        df["close_pct"] = df["close"].pct_change()
+        if "close_pct" not in df.columns:
+            df["close_pct"] = df["close"].pct_change()
         for l in range(1, n_lags + 1):
             col = f"close_pct_lag{l}"
             if col in feature_names:

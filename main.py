@@ -1,12 +1,18 @@
-# main.py / app.py
+# main.py - Aplicación mejorada de predicción de Bitcoin
 import streamlit as st
 import pandas as pd
 import numpy as np
-import altair as alt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import joblib
+from datetime import timedelta
 
-st.set_page_config(page_title="Predicción % cambio — DTR con feedback", layout="wide")
-st.title("Predicción de % de cambio (siguiente período) — DecisionTreeRegressor con feedback")
+st.set_page_config(
+    page_title="Bitcoin Predictor - Análisis y Predicción",
+    page_icon="₿",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # ---------- Carga del artefacto ----------
 @st.cache_resource

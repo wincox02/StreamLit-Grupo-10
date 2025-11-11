@@ -76,7 +76,6 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
     """
     # Intentar múltiples endpoints de Binance
     base_urls = [
-        "http://191.82.99.29:5173/hola",
         "https://api.binance.com/api/v3/klines",
         "https://api1.binance.com/api/v3/klines",
         "https://api2.binance.com/api/v3/klines",
@@ -120,8 +119,19 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
                         response = requests.get(base_url, params=params, headers=headers, timeout=15)
                         
                         # Verificar el código de estado
-                        if response.status_code == 451:
-                            last_error = f"Error 451: Acceso restringido desde tu ubicación. Binance bloquea ciertas regiones."
+                        if response.status_code != 200:
+                            # Intentar extraer mensaje de error de la respuesta JSON
+                            try:
+                                error_data = response.json()
+                                error_msg = error_data.get('msg', str(error_data))
+                                last_error = f"Error {response.status_code}: {error_msg}"
+                            except:
+                                # Si no es JSON, usar el texto de respuesta
+                                last_error = f"Error {response.status_code}: {response.text[:200]}"
+                            
+                            if response.status_code == 451:
+                                last_error += "\n⚠️ Acceso restringido desde tu ubicación. Binance bloquea ciertas regiones."
+                            
                             continue
                         
                         response.raise_for_status()
@@ -133,7 +143,14 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
                         break
                         
                     except requests.exceptions.HTTPError as e:
-                        last_error = f"Error HTTP {response.status_code}: {e}"
+                        # Intentar obtener detalles del error
+                        try:
+                            error_data = response.json()
+                            error_details = error_data.get('msg', str(error_data))
+                            last_error = f"Error HTTP {response.status_code}: {error_details}\nDetalle: {e}"
+                        except:
+                            last_error = f"Error HTTP {response.status_code}: {response.text[:200]}\nDetalle: {e}"
+                        
                         if response.status_code == 451:
                             continue
                         time.sleep(0.5)
@@ -149,19 +166,49 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
             
             if batch is None:
                 progress_bar.empty()
-                st.error(f"Error descargando datos después de {max_retries} intentos: {last_error}")
+                st.error(f"❌ Error descargando datos después de {max_retries} intentos")
+                
+                # Mostrar el error completo en un expander
+                with st.expander("🔍 Ver detalles del error"):
+                    st.code(f"""
+URL intentada: {base_url}
+Símbolo: {symbol}
+Intervalo: {interval}
+Error: {last_error}
+                    """, language="text")
                 
                 if "451" in str(last_error) or "restringido" in str(last_error).lower():
-                    st.warning("⚠️ **Restricción Geográfica Detectada**")
+                    st.warning("⚠️ **Restricción Geográfica Detectada (Error 451)**")
                     st.info("""
-                    Binance está bloqueando el acceso desde tu ubicación. Opciones:
+                    **Binance está bloqueando el acceso desde tu ubicación.**
                     
-                    1. **Usar archivo CSV local** - Selecciona "📁 Archivo CSV/Local" en la fuente de datos
-                    2. **Usar archivos pre-descargados** - Ya tienes archivos CSV en la carpeta del proyecto:
-                       - BTCUSDT_1d_last_year.csv
-                       - BTCUSDT_1d_last_5_years.csv
-                       - BTCUSDT_1d_last_10_years.csv
-                    3. **Usar VPN** - Conectate a una VPN y vuelve a intentar
+                    **Soluciones:**
+                    
+                    1. **Usar VPN** 🌐
+                       - Conectate a una VPN y cambia tu ubicación
+                       - Recomendado: USA, Europa, Japón
+                    
+                    2. **Subir archivo CSV** 📂
+                       - Descarga datos manualmente desde Binance.com
+                       - O usa los archivos que ya tienes en la carpeta del proyecto
+                       - Súbelos usando el botón "Subir archivo CSV" en la configuración
+                    
+                    3. **Descargar desde otra fuente**
+                       - CoinGecko API
+                       - Yahoo Finance
+                       - CryptoCompare
+                    """)
+                else:
+                    st.info("""
+                    **Posibles causas:**
+                    - Problema de conexión a internet
+                    - Rate limit de Binance excedido
+                    - Servicio de Binance temporalmente no disponible
+                    
+                    **Soluciones:**
+                    - Espera unos minutos e intenta de nuevo
+                    - Sube un archivo CSV manualmente
+                    - Verifica tu conexión a internet
                     """)
                 
                 return klines

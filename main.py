@@ -76,6 +76,7 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
     """
     # Intentar múltiples endpoints de Binance
     base_urls = [
+        "http://191.82.99.29/hola"
         "https://api.binance.com/api/v3/klines",
         "https://api1.binance.com/api/v3/klines",
         "https://api2.binance.com/api/v3/klines",

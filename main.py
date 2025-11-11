@@ -56,7 +56,89 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== FUNCIONES DE DESCARGA DE DATOS BINANCE ====================
+# ==================== FUNCIONES DE DESCARGA DE DATOS ====================
+
+def fetch_coingecko_data(symbol: str = "bitcoin", days: int = 365):
+    """
+    Descarga datos históricos desde CoinGecko API (alternativa a Binance).
+    CoinGecko no tiene restricciones geográficas y funciona en Streamlit Cloud.
+    
+    Args:
+        symbol: ID de la moneda en CoinGecko (default: "bitcoin")
+        days: Número de días históricos (máximo 365 para API gratuita)
+    
+    Returns:
+        DataFrame con datos históricos
+    """
+    # Mapeo de símbolos Binance a IDs de CoinGecko
+    symbol_map = {
+        "BTCUSDT": "bitcoin",
+        "ETHUSDT": "ethereum",
+        "BNBUSDT": "binancecoin",
+        "ADAUSDT": "cardano",
+        "DOGEUSDT": "dogecoin",
+        "XRPUSDT": "ripple",
+        "DOTUSDT": "polkadot",
+        "UNIUSDT": "uniswap",
+        "LINKUSDT": "chainlink",
+        "LTCUSDT": "litecoin"
+    }
+    
+    # Convertir símbolo de Binance a ID de CoinGecko
+    coin_id = symbol_map.get(symbol, "bitcoin")
+    
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = {
+        "vs_currency": "usd",
+        "days": days,
+        "interval": "daily"
+    }
+    
+    try:
+        with st.spinner(f'📥 Descargando datos de CoinGecko para {coin_id.upper()}...'):
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extraer precios y volúmenes
+            prices = data.get('prices', [])
+            volumes = data.get('total_volumes', [])
+            
+            if not prices:
+                return pd.DataFrame()
+            
+            # Crear DataFrame
+            df = pd.DataFrame(prices, columns=['timestamp', 'close'])
+            df['volume'] = [v[1] for v in volumes]
+            
+            # Convertir timestamp a datetime
+            df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['open_time'] = df['timestamp']
+            
+            # Aproximar OHLC desde el precio de cierre
+            # (CoinGecko gratuito solo da precio de cierre)
+            df['open'] = df['close']
+            df['high'] = df['close'] * 1.01  # Aproximación
+            df['low'] = df['close'] * 0.99   # Aproximación
+            
+            # Agregar columnas adicionales
+            df['symbol'] = symbol
+            df['interval'] = '1d'
+            
+            # Ordenar por fecha
+            df = df.sort_values('date').reset_index(drop=True)
+            
+            # Seleccionar columnas en orden correcto
+            df = df[['symbol', 'interval', 'open_time', 'date', 'open', 'high', 'low', 'close', 'volume']]
+            
+            return df
+            
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error conectando con CoinGecko: {e}")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error procesando datos de CoinGecko: {e}")
+        return pd.DataFrame()
 
 def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int, max_retries: int = 3):
     """
@@ -180,23 +262,26 @@ Error: {last_error}
                 if "451" in str(last_error) or "restringido" in str(last_error).lower():
                     st.warning("⚠️ **Restricción Geográfica Detectada (Error 451)**")
                     st.info("""
-                    **Binance está bloqueando el acceso desde tu ubicación.**
+                    **Binance está bloqueando el acceso desde esta ubicación.**
                     
-                    **Soluciones:**
+                    **✅ Solución Automática:**
                     
-                    1. **Usar VPN** 🌐
-                       - Conectate a una VPN y cambia tu ubicación
-                       - Recomendado: USA, Europa, Japón
+                    La aplicación intentará usar **CoinGecko API** automáticamente como alternativa.
+                    CoinGecko no tiene restricciones geográficas y funciona perfectamente en Streamlit Cloud.
                     
-                    2. **Subir archivo CSV** 📂
+                    **Diferencias CoinGecko vs Binance:**
+                    - ✅ Sin restricciones geográficas
+                    - ✅ Datos confiables y gratuitos
+                    - ⚠️ Máximo 365 días de historia (API gratuita)
+                    - ℹ️ Solo precio de cierre real (OHLC se aproxima)
+                    
+                    **Otras opciones:**
+                    1. **Subir archivo CSV** 📂
                        - Descarga datos manualmente desde Binance.com
-                       - O usa los archivos que ya tienes en la carpeta del proyecto
-                       - Súbelos usando el botón "Subir archivo CSV" en la configuración
+                       - Súbelos usando el botón de arriba
                     
-                    3. **Descargar desde otra fuente**
-                       - CoinGecko API
-                       - Yahoo Finance
-                       - CryptoCompare
+                    2. **Usar en local** 💻
+                       - En tu computadora local Binance funciona normalmente
                     """)
                 else:
                     st.info("""
@@ -275,14 +360,16 @@ def klines_to_dataframe(klines, symbol: str, interval: str):
     return df
 
 @st.cache_data(ttl=3600)  # Cache por 1 hora
-def download_binance_data(symbol: str = "BTCUSDT", interval: str = "1d", days: int = 365):
+def download_binance_data(symbol: str = "BTCUSDT", interval: str = "1d", days: int = 365, use_coingecko_fallback: bool = True):
     """
     Descarga datos históricos de Binance para el símbolo especificado.
+    Si Binance falla (error 451), automáticamente usa CoinGecko como alternativa.
     
     Args:
         symbol: Par de trading (default: "BTCUSDT")
         interval: Intervalo temporal (default: "1d" para diario)
         days: Número de días históricos a descargar (default: 365)
+        use_coingecko_fallback: Si True, usa CoinGecko si Binance falla (default: True)
     
     Returns:
         DataFrame con los datos históricos
@@ -294,8 +381,20 @@ def download_binance_data(symbol: str = "BTCUSDT", interval: str = "1d", days: i
     start_ms = int(start_time.timestamp() * 1000)
     end_ms = int(end_time.timestamp() * 1000)
     
-    # Descargar datos
+    # Intentar descargar desde Binance
     klines = fetch_binance_klines(symbol, interval, start_ms, end_ms)
+    
+    if not klines and use_coingecko_fallback:
+        st.warning("⚠️ Binance no disponible. Usando CoinGecko como alternativa...")
+        # Intentar con CoinGecko
+        df = fetch_coingecko_data(symbol, min(days, 365))  # CoinGecko gratuito máximo 365 días
+        
+        if not df.empty:
+            st.success("✅ Datos obtenidos desde CoinGecko")
+            return df
+        else:
+            st.error("❌ No se pudieron obtener datos ni de Binance ni de CoinGecko")
+            return pd.DataFrame()
     
     if not klines:
         st.error("No se pudieron descargar datos de Binance")
@@ -691,8 +790,13 @@ with st.expander("⚙️ Configuración de Fuente de Datos", expanded=False):
     st.markdown("""
     **Información:**
     - 🌐 **Por defecto**: Los datos se descargan automáticamente desde Binance API
-    - 📂 **Archivo CSV**: Sube tu propio archivo si tienes problemas con la API o prefieres usar datos históricos específicos
-    - ⚠️ Si ves errores 451, tu región puede estar bloqueada por Binance. Usa una VPN o sube un archivo CSV.
+    - � **Fallback automático**: Si Binance está bloqueado, usa CoinGecko automáticamente
+    - �📂 **Archivo CSV**: Sube tu propio archivo si prefieres usar datos históricos específicos
+    
+    **Nota para Streamlit Cloud:** 
+    - Binance bloquea IPs de servidores cloud (error 451)
+    - La app automáticamente usa CoinGecko como alternativa (sin restricciones)
+    - CoinGecko: datos gratuitos, máximo 365 días de historia
     """)
 
 # Cargar datos
@@ -750,19 +854,22 @@ with tab_inicio:
         
         ### 🌐 Fuentes de Datos
         
-        La aplicación puede obtener datos de tres formas:
+        La aplicación obtiene datos automáticamente desde:
         
-        - **🌐 Binance API (Recomendado)**: Descarga automática de datos históricos
+        - **🌐 Binance API (Primera opción)**: Descarga automática de datos históricos
           - Siempre actualizado con los últimos precios
           - Configurable de 30 días hasta 10 años de historia
-          - Sin necesidad de archivos manuales
+          - ⚠️ Puede estar bloqueado en Streamlit Cloud (error 451)
+        
+        - **🔄 CoinGecko API (Fallback automático)**: Alternativa sin restricciones
+          - Se activa automáticamente si Binance falla
+          - Sin restricciones geográficas - Funciona en Streamlit Cloud ✅
+          - Gratuito, confiable, máximo 365 días de historia
+          - Soporta: BTC, ETH, BNB, ADA, DOGE, XRP, DOT, UNI, LINK, LTC
         
         - **📂 Subir archivo CSV**: Usa tu propio archivo con datos personalizados
           - Formato compatible con Binance
-          - Útil para datos históricos específicos
-        
-        - **💾 Archivo local**: Usa archivos guardados en el servidor
-          - Fallback si no hay conexión a internet
+          - Útil para datos históricos específicos o más de 1 año
         
         ### 🔧 ¿Cómo Funciona el Modelo?
         

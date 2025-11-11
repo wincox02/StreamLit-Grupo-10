@@ -62,6 +62,7 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
     """
     Descarga velas (klines) de Binance usando la API pública.
     Pagina automáticamente si hay más de 1000 registros.
+    Intenta múltiples endpoints si uno falla (api.binance.com, api1.binance.com, api2.binance.com).
     
     Args:
         symbol: Par de trading (ej: "BTCUSDT")
@@ -73,10 +74,25 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
     Returns:
         Lista de klines en formato Binance
     """
-    base_url = "https://api.binance.com/api/v3/klines"
+    # Intentar múltiples endpoints de Binance
+    base_urls = [
+        "https://api.binance.com/api/v3/klines",
+        "https://api1.binance.com/api/v3/klines",
+        "https://api2.binance.com/api/v3/klines",
+        "https://api3.binance.com/api/v3/klines",
+    ]
+    
     klines = []
     limit = 1000  # Máximo permitido por request
     next_start = start_ms
+    last_error = None
+    successful_url = None
+    
+    # Headers para evitar bloqueos
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+    }
     
     with st.spinner(f'Descargando datos de {symbol}...'):
         progress_bar = st.progress(0)
@@ -91,18 +107,63 @@ def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int,
                 "limit": limit,
             }
             
-            # Reintentos en caso de error
+            # Reintentos con múltiples URLs
+            batch = None
             for attempt in range(max_retries):
-                try:
-                    response = requests.get(base_url, params=params, timeout=10)
-                    response.raise_for_status()
-                    batch = response.json()
+                for base_url in base_urls:
+                    # Si ya encontramos una URL que funciona, usarla primero
+                    if successful_url:
+                        base_url = successful_url
+                    
+                    try:
+                        response = requests.get(base_url, params=params, headers=headers, timeout=15)
+                        
+                        # Verificar el código de estado
+                        if response.status_code == 451:
+                            last_error = f"Error 451: Acceso restringido desde tu ubicación. Binance bloquea ciertas regiones."
+                            continue
+                        
+                        response.raise_for_status()
+                        batch = response.json()
+                        
+                        # Marcar esta URL como exitosa
+                        if not successful_url:
+                            successful_url = base_url
+                        break
+                        
+                    except requests.exceptions.HTTPError as e:
+                        last_error = f"Error HTTP {response.status_code}: {e}"
+                        if response.status_code == 451:
+                            continue
+                        time.sleep(0.5)
+                    except requests.exceptions.RequestException as e:
+                        last_error = f"Error de conexión: {e}"
+                        time.sleep(0.5)
+                
+                if batch is not None:
                     break
-                except requests.exceptions.RequestException as e:
-                    if attempt == max_retries - 1:
-                        st.error(f"Error descargando datos después de {max_retries} intentos: {e}")
-                        return klines
-                    time.sleep(1)  # Esperar antes de reintentar
+                    
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+            
+            if batch is None:
+                progress_bar.empty()
+                st.error(f"Error descargando datos después de {max_retries} intentos: {last_error}")
+                
+                if "451" in str(last_error) or "restringido" in str(last_error).lower():
+                    st.warning("⚠️ **Restricción Geográfica Detectada**")
+                    st.info("""
+                    Binance está bloqueando el acceso desde tu ubicación. Opciones:
+                    
+                    1. **Usar archivo CSV local** - Selecciona "📁 Archivo CSV/Local" en la fuente de datos
+                    2. **Usar archivos pre-descargados** - Ya tienes archivos CSV en la carpeta del proyecto:
+                       - BTCUSDT_1d_last_year.csv
+                       - BTCUSDT_1d_last_5_years.csv
+                       - BTCUSDT_1d_last_10_years.csv
+                    3. **Usar VPN** - Conectate a una VPN y vuelve a intentar
+                    """)
+                
+                return klines
             
             if not batch:
                 break
@@ -220,18 +281,12 @@ def load_artifact(path="models/model_feedback.pkl"):
         st.stop()
 
 @st.cache_data
-def load_df(uploaded_file=None, use_binance_api=True, symbol="BTCUSDT", days=365):
+def load_df(uploaded_file=None, symbol="BTCUSDT", days=365):
     """
-    Carga datos de Bitcoin desde múltiples fuentes.
-    
-    Prioridad:
-    1. Archivo subido por el usuario
-    2. API de Binance (si use_binance_api=True)
-    3. Archivo CSV local por defecto
+    Carga datos de Bitcoin desde Binance API o archivo subido.
     
     Args:
         uploaded_file: Archivo CSV subido por el usuario (opcional)
-        use_binance_api: Si True, descarga datos desde Binance API
         symbol: Símbolo del par de trading (default: "BTCUSDT")
         days: Días históricos a descargar (default: 365)
     
@@ -244,31 +299,21 @@ def load_df(uploaded_file=None, use_binance_api=True, symbol="BTCUSDT", days=365
         df = pd.read_csv(uploaded_file)
     
     # Opción 2: Descargar desde Binance API
-    elif use_binance_api:
+    else:
         st.info(f"🌐 Descargando datos de Binance para {symbol}...")
         df = download_binance_data(symbol=symbol, interval="1d", days=days)
         
         if df.empty:
-            st.warning("⚠️ No se pudieron descargar datos de Binance. Intentando usar archivo local...")
-            # Fallback a archivo local
-            try:
-                df = pd.read_csv("BTCUSDT_1d_last_year.csv")
-                st.success("✅ Datos cargados desde archivo local de respaldo")
-            except:
-                st.error("❌ No se encontró archivo CSV local. Por favor, sube un archivo CSV o verifica tu conexión a internet.")
-                st.stop()
+            st.error("❌ No se pudieron descargar datos de Binance.")
+            st.info("""
+            **Opciones:**
+            1. Verifica tu conexión a internet
+            2. Usa una VPN si estás en una región bloqueada por Binance
+            3. Sube un archivo CSV con formato Binance usando el botón de arriba
+            """)
+            st.stop()
         else:
             st.success(f"✅ {len(df)} registros descargados exitosamente desde Binance")
-    
-    # Opción 3: Archivo local por defecto
-    else:
-        try:
-            st.info("📂 Cargando datos desde archivo local...")
-            df = pd.read_csv("BTCUSDT_1d_last_year.csv")
-            st.success("✅ Datos cargados desde archivo local")
-        except:
-            st.error("❌ No se encontró archivo CSV local. Activa la descarga desde Binance o sube un archivo CSV.")
-            st.stop()
     
     # Asegurar columna de fecha
     if "date" not in df.columns and "open_time" in df.columns:
@@ -581,52 +626,30 @@ SCALER_Y = artifact.get("scaler_y", None)
 with st.expander("⚙️ Configuración de Fuente de Datos", expanded=False):
     st.markdown("### 📊 Opciones de Carga de Datos")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
-        data_source = st.radio(
-            "Fuente de datos:",
-            ["🌐 Binance API (Automático)", "📂 Subir archivo CSV", "💾 Archivo local"],
-            help="Selecciona cómo quieres cargar los datos de Bitcoin"
+        uploaded_file = st.file_uploader(
+            "� Subir archivo CSV (opcional)", 
+            type=["csv"], 
+            help="Deja en blanco para descargar automáticamente desde Binance API"
         )
     
     with col2:
-        if data_source == "🌐 Binance API (Automático)":
-            symbol = st.text_input("Símbolo", value="BTCUSDT", help="Par de trading en Binance")
-            days = st.slider("Días históricos", 30, 3650, 365, 30, help="Cantidad de días de historia a descargar")
-        else:
-            symbol = "BTCUSDT"
-            days = 365
-    
-    with col3:
-        if data_source == "📂 Subir archivo CSV":
-            uploaded_file = st.file_uploader("Subir CSV", type=["csv"], help="Archivo CSV con formato Binance")
-        else:
-            uploaded_file = None
+        symbol = st.text_input("Símbolo", value="BTCUSDT", help="Par de trading en Binance")
+        days = st.slider("Días históricos", 30, 3650, 365, 30, help="Cantidad de días de historia a descargar")
     
     st.markdown("---")
     st.markdown("""
     **Información:**
-    - 🌐 **Binance API**: Descarga datos automáticamente (recomendado)
-    - 📂 **Subir archivo**: Usa tu propio archivo CSV
-    - 💾 **Archivo local**: Usa archivo guardado en el servidor
+    - 🌐 **Por defecto**: Los datos se descargan automáticamente desde Binance API
+    - 📂 **Archivo CSV**: Sube tu propio archivo si tienes problemas con la API o prefieres usar datos históricos específicos
+    - ⚠️ Si ves errores 451, tu región puede estar bloqueada por Binance. Usa una VPN o sube un archivo CSV.
     """)
 
-# Determinar parámetros de carga según la fuente seleccionada
-if data_source == "🌐 Binance API (Automático)":
-    use_binance_api = True
-    uploaded_file_param = None
-elif data_source == "📂 Subir archivo CSV":
-    use_binance_api = False
-    uploaded_file_param = uploaded_file
-else:  # Archivo local
-    use_binance_api = False
-    uploaded_file_param = None
-
-# Cargar datos con la configuración seleccionada
+# Cargar datos
 df = load_df(
-    uploaded_file=uploaded_file_param, 
-    use_binance_api=use_binance_api,
+    uploaded_file=uploaded_file,
     symbol=symbol,
     days=days
 )
@@ -730,10 +753,11 @@ with tab_inicio:
         st.markdown("""
         #### 0️⃣ Configurar Datos
         Expande **"⚙️ Configuración de Fuente de Datos"** al inicio para:
-        - Elegir fuente de datos
         - Seleccionar símbolo (BTCUSDT, ETHUSDT, etc.)
-        - Configurar días históricos
-        - Subir archivo CSV personalizado
+        - Configurar días históricos (hasta 10 años)
+        - Opcionalmente subir archivo CSV personalizado
+        
+        Por defecto, los datos se descargan automáticamente desde Binance API
         """)
     
     with col2:

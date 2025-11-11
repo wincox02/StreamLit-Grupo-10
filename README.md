@@ -1,6 +1,6 @@
 # Bitcoin Price Predictor - Aplicación Mejorada
 
-Aplicación de predicción de precios de Bitcoin usando Machine Learning con interfaz interactiva.
+Aplicación de predicción de precios de Bitcoin usando Machine Learning con interfaz interactiva y **descarga automática de datos desde Binance API**.
 
 ## 🚀 Despliegue en Streamlit Cloud
 
@@ -16,6 +16,7 @@ numpy
 scikit-learn
 plotly
 joblib
+requests  ← Nuevo: Para descarga desde Binance API
 ```
 
 ### 📁 Estructura del Proyecto
@@ -31,7 +32,16 @@ joblib
 
 ## 🎯 Características
 
-### 🏠 Tab Inicio
+### � **NUEVO: Descarga Automática de Datos**
+- Descarga datos históricos directamente desde Binance API
+- Configurable de 30 días hasta 10 años de historia
+- Sin necesidad de cargar archivos CSV manualmente
+- Tres fuentes de datos disponibles:
+  - 🌐 Binance API (Automático - Recomendado)
+  - 📂 Subir archivo CSV personalizado
+  - 💾 Archivo local del servidor
+
+### �🏠 Tab Inicio
 - Explicación completa del modelo
 - Guía de uso
 - Advertencias importantes
@@ -55,6 +65,7 @@ joblib
 
 ## 🎨 Mejoras Implementadas
 
+✅ **Descarga automática desde Binance API** (NUEVO)
 ✅ Sin sidebar (interfaz limpia)
 ✅ Gráficos interactivos con Plotly
 ✅ Zoom, pan y tooltips
@@ -63,6 +74,7 @@ joblib
 ✅ Comparación de múltiples plazos
 ✅ Filtros avanzados
 ✅ Documentación completa
+✅ Tres fuentes de datos flexibles
 
 ## 📝 Notas para Streamlit Cloud
 

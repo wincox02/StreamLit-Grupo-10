@@ -1,11 +1,14 @@
-# main_mejorado.py - Aplicación completa de predicción de Bitcoin
+# main.py - Aplicación completa de predicción de Bitcoin
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import joblib
-from datetime import timedelta
+from datetime import datetime, timedelta
+import requests
+import time
+import os
 
 st.set_page_config(
     page_title="Bitcoin Predictor - Análisis y Predicción",
@@ -53,6 +56,150 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ==================== FUNCIONES DE DESCARGA DE DATOS BINANCE ====================
+
+def fetch_binance_klines(symbol: str, interval: str, start_ms: int, end_ms: int, max_retries: int = 3):
+    """
+    Descarga velas (klines) de Binance usando la API pública.
+    Pagina automáticamente si hay más de 1000 registros.
+    
+    Args:
+        symbol: Par de trading (ej: "BTCUSDT")
+        interval: Intervalo temporal (ej: "1d", "1h", "15m")
+        start_ms: Timestamp de inicio en milisegundos
+        end_ms: Timestamp de fin en milisegundos
+        max_retries: Número máximo de reintentos por request
+    
+    Returns:
+        Lista de klines en formato Binance
+    """
+    base_url = "https://api.binance.com/api/v3/klines"
+    klines = []
+    limit = 1000  # Máximo permitido por request
+    next_start = start_ms
+    
+    with st.spinner(f'Descargando datos de {symbol}...'):
+        progress_bar = st.progress(0)
+        total_duration = end_ms - start_ms
+        
+        while next_start < end_ms:
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "startTime": next_start,
+                "endTime": end_ms,
+                "limit": limit,
+            }
+            
+            # Reintentos en caso de error
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(base_url, params=params, timeout=10)
+                    response.raise_for_status()
+                    batch = response.json()
+                    break
+                except requests.exceptions.RequestException as e:
+                    if attempt == max_retries - 1:
+                        st.error(f"Error descargando datos después de {max_retries} intentos: {e}")
+                        return klines
+                    time.sleep(1)  # Esperar antes de reintentar
+            
+            if not batch:
+                break
+            
+            klines.extend(batch)
+            
+            # Actualizar barra de progreso
+            progress = min((next_start - start_ms) / total_duration, 1.0)
+            progress_bar.progress(progress)
+            
+            # Avanzar al siguiente inicio: último closeTime + 1ms
+            last_close = batch[-1][6]  # Close time (ms)
+            if last_close >= end_ms:
+                break
+            next_start = last_close + 1
+            
+            # Respetar rate limits de Binance (1200 requests/minuto)
+            time.sleep(0.1)
+        
+        progress_bar.progress(1.0)
+    
+    return klines
+
+def klines_to_dataframe(klines, symbol: str, interval: str):
+    """
+    Convierte lista de klines de Binance a DataFrame de pandas.
+    
+    Args:
+        klines: Lista de klines en formato Binance
+        symbol: Símbolo del par de trading
+        interval: Intervalo temporal
+    
+    Returns:
+        DataFrame con los datos procesados
+    """
+    if not klines:
+        return pd.DataFrame()
+    
+    # Esquema según documentación de Binance para /api/v3/klines
+    columns = [
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
+    ]
+    
+    df = pd.DataFrame(klines, columns=columns)
+    
+    # Agregar columnas de símbolo e intervalo
+    df.insert(0, "symbol", symbol)
+    df.insert(1, "interval", interval)
+    
+    # Convertir tipos de datos
+    numeric_columns = ["open", "high", "low", "close", "volume", 
+                      "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume"]
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Convertir timestamps a datetime
+    df["date"] = pd.to_datetime(df["open_time"], unit="ms")
+    
+    return df
+
+@st.cache_data(ttl=3600)  # Cache por 1 hora
+def download_binance_data(symbol: str = "BTCUSDT", interval: str = "1d", days: int = 365):
+    """
+    Descarga datos históricos de Binance para el símbolo especificado.
+    
+    Args:
+        symbol: Par de trading (default: "BTCUSDT")
+        interval: Intervalo temporal (default: "1d" para diario)
+        days: Número de días históricos a descargar (default: 365)
+    
+    Returns:
+        DataFrame con los datos históricos
+    """
+    # Calcular rango de fechas
+    end_time = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_time = end_time - timedelta(days=days)
+    
+    start_ms = int(start_time.timestamp() * 1000)
+    end_ms = int(end_time.timestamp() * 1000)
+    
+    # Descargar datos
+    klines = fetch_binance_klines(symbol, interval, start_ms, end_ms)
+    
+    if not klines:
+        st.error("No se pudieron descargar datos de Binance")
+        return pd.DataFrame()
+    
+    # Convertir a DataFrame
+    df = klines_to_dataframe(klines, symbol, interval)
+    
+    # Ordenar por fecha
+    df = df.sort_values("date").reset_index(drop=True)
+    
+    return df
+
 # ==================== FUNCIONES DE CARGA Y PROCESAMIENTO ====================
 
 @st.cache_resource
@@ -73,15 +220,54 @@ def load_artifact(path="models/model_feedback.pkl"):
         st.stop()
 
 @st.cache_data
-def load_df(uploaded_file=None):
-    """Carga el CSV desde el uploader o usa uno por defecto"""
+def load_df(uploaded_file=None, use_binance_api=True, symbol="BTCUSDT", days=365):
+    """
+    Carga datos de Bitcoin desde múltiples fuentes.
+    
+    Prioridad:
+    1. Archivo subido por el usuario
+    2. API de Binance (si use_binance_api=True)
+    3. Archivo CSV local por defecto
+    
+    Args:
+        uploaded_file: Archivo CSV subido por el usuario (opcional)
+        use_binance_api: Si True, descarga datos desde Binance API
+        symbol: Símbolo del par de trading (default: "BTCUSDT")
+        days: Días históricos a descargar (default: 365)
+    
+    Returns:
+        DataFrame con los datos históricos
+    """
+    # Opción 1: Archivo subido por usuario
     if uploaded_file is not None:
+        st.info("📂 Cargando datos desde archivo subido...")
         df = pd.read_csv(uploaded_file)
+    
+    # Opción 2: Descargar desde Binance API
+    elif use_binance_api:
+        st.info(f"🌐 Descargando datos de Binance para {symbol}...")
+        df = download_binance_data(symbol=symbol, interval="1d", days=days)
+        
+        if df.empty:
+            st.warning("⚠️ No se pudieron descargar datos de Binance. Intentando usar archivo local...")
+            # Fallback a archivo local
+            try:
+                df = pd.read_csv("BTCUSDT_1d_last_year.csv")
+                st.success("✅ Datos cargados desde archivo local de respaldo")
+            except:
+                st.error("❌ No se encontró archivo CSV local. Por favor, sube un archivo CSV o verifica tu conexión a internet.")
+                st.stop()
+        else:
+            st.success(f"✅ {len(df)} registros descargados exitosamente desde Binance")
+    
+    # Opción 3: Archivo local por defecto
     else:
         try:
+            st.info("📂 Cargando datos desde archivo local...")
             df = pd.read_csv("BTCUSDT_1d_last_year.csv")
+            st.success("✅ Datos cargados desde archivo local")
         except:
-            st.error("No se encontró archivo CSV por defecto. Por favor, sube un archivo CSV.")
+            st.error("❌ No se encontró archivo CSV local. Activa la descarga desde Binance o sube un archivo CSV.")
             st.stop()
     
     # Asegurar columna de fecha
@@ -90,7 +276,9 @@ def load_df(uploaded_file=None):
     elif "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
     
+    # Ordenar por fecha
     df = df.sort_values("date").reset_index(drop=True)
+    
     return df
 
 def ensure_feature_names(df_raw, feature_names, base_features, n_lags, use_feedback=True):
@@ -387,8 +575,61 @@ N_LAGS = int(artifact.get("n_lags", 5))
 USE_FEEDBACK = bool(artifact.get("use_feedback", True))
 SCALER_Y = artifact.get("scaler_y", None)
 
-# Cargar datos
-df = load_df()
+# ==================== CONFIGURACIÓN DE DATOS ====================
+
+# Mostrar configuración al inicio (colapsable)
+with st.expander("⚙️ Configuración de Fuente de Datos", expanded=False):
+    st.markdown("### 📊 Opciones de Carga de Datos")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        data_source = st.radio(
+            "Fuente de datos:",
+            ["🌐 Binance API (Automático)", "📂 Subir archivo CSV", "💾 Archivo local"],
+            help="Selecciona cómo quieres cargar los datos de Bitcoin"
+        )
+    
+    with col2:
+        if data_source == "🌐 Binance API (Automático)":
+            symbol = st.text_input("Símbolo", value="BTCUSDT", help="Par de trading en Binance")
+            days = st.slider("Días históricos", 30, 3650, 365, 30, help="Cantidad de días de historia a descargar")
+        else:
+            symbol = "BTCUSDT"
+            days = 365
+    
+    with col3:
+        if data_source == "📂 Subir archivo CSV":
+            uploaded_file = st.file_uploader("Subir CSV", type=["csv"], help="Archivo CSV con formato Binance")
+        else:
+            uploaded_file = None
+    
+    st.markdown("---")
+    st.markdown("""
+    **Información:**
+    - 🌐 **Binance API**: Descarga datos automáticamente (recomendado)
+    - 📂 **Subir archivo**: Usa tu propio archivo CSV
+    - 💾 **Archivo local**: Usa archivo guardado en el servidor
+    """)
+
+# Determinar parámetros de carga según la fuente seleccionada
+if data_source == "🌐 Binance API (Automático)":
+    use_binance_api = True
+    uploaded_file_param = None
+elif data_source == "📂 Subir archivo CSV":
+    use_binance_api = False
+    uploaded_file_param = uploaded_file
+else:  # Archivo local
+    use_binance_api = False
+    uploaded_file_param = None
+
+# Cargar datos con la configuración seleccionada
+df = load_df(
+    uploaded_file=uploaded_file_param, 
+    use_binance_api=use_binance_api,
+    symbol=symbol,
+    days=days
+)
 
 # Inicializar session state
 if 'predictions_1d' not in st.session_state:
@@ -430,10 +671,27 @@ with tab_inicio:
         st.markdown("""
         ### 📊 Características Principales
         
-        1. **Predicción de Mañana**: Predice el cambio de precio para el siguiente día
-        2. **Predicción Múltiple**: Predice varios días hacia adelante con retroalimentación
-        3. **Gráficos Interactivos**: Visualización tipo trading con zoom y filtros
-        4. **Análisis Comparativo**: Compara predicciones a 1, 5 y 10 días
+        1. **Descarga Automática de Datos**: Obtiene datos en tiempo real desde Binance API
+        2. **Predicción de Mañana**: Predice el cambio de precio para el siguiente día
+        3. **Predicción Múltiple**: Predice varios días hacia adelante con retroalimentación
+        4. **Gráficos Interactivos**: Visualización tipo trading con zoom y filtros
+        5. **Análisis Comparativo**: Compara predicciones a 1, 5 y 10 días
+        
+        ### 🌐 Fuentes de Datos
+        
+        La aplicación puede obtener datos de tres formas:
+        
+        - **🌐 Binance API (Recomendado)**: Descarga automática de datos históricos
+          - Siempre actualizado con los últimos precios
+          - Configurable de 30 días hasta 10 años de historia
+          - Sin necesidad de archivos manuales
+        
+        - **📂 Subir archivo CSV**: Usa tu propio archivo con datos personalizados
+          - Formato compatible con Binance
+          - Útil para datos históricos específicos
+        
+        - **💾 Archivo local**: Usa archivos guardados en el servidor
+          - Fallback si no hay conexión a internet
         
         ### 🔧 ¿Cómo Funciona el Modelo?
         
@@ -466,9 +724,19 @@ with tab_inicio:
     st.markdown("---")
     st.markdown("### 🚀 Cómo Usar la Aplicación")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
+        st.markdown("""
+        #### 0️⃣ Configurar Datos
+        Expande **"⚙️ Configuración de Fuente de Datos"** al inicio para:
+        - Elegir fuente de datos
+        - Seleccionar símbolo (BTCUSDT, ETHUSDT, etc.)
+        - Configurar días históricos
+        - Subir archivo CSV personalizado
+        """)
+    
+    with col2:
         st.markdown("""
         #### 1️⃣ Explorar Datos
         Ve a la pestaña **Exploración de Datos** para:
@@ -477,7 +745,7 @@ with tab_inicio:
         - Aplicar filtros temporales
         """)
         
-    with col2:
+    with col3:
         st.markdown("""
         #### 2️⃣ Hacer Predicciones
         Ve a la pestaña **Predicción** para:
@@ -486,7 +754,7 @@ with tab_inicio:
         - Ver comparaciones
         """)
         
-    with col3:
+    with col4:
         st.markdown("""
         #### 3️⃣ Entender el Modelo
         Ve a la pestaña **Sobre el Modelo** para:

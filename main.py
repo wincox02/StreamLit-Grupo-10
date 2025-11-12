@@ -432,41 +432,21 @@ SCALER_Y = artifact.get("scaler_y", None)
 # ==================== CONFIGURACIÓN DE DATOS ====================
 
 # Mostrar configuración al inicio (colapsable)
-with st.expander("⚙️ Configuración de Fuente de Datos", expanded=False):
-    st.markdown("### 📊 Opciones de Carga de Datos")
+with st.expander("⚙️ Configuración de Fuente de Datos", expanded=True):
+    st.markdown("### 📊 Carga de Datos")
     
-    col1, col2 = st.columns(2)
+    uploaded_file = st.file_uploader(
+        "Selecciona archivo CSV", 
+        type=["csv"], 
+        help="Archivo CSV con formato Binance"
+    )
     
-    with col1:
-        uploaded_file = st.file_uploader(
-            "� Subir archivo CSV (opcional)", 
-            type=["csv"], 
-            help="Deja en blanco para descargar automáticamente desde Binance API"
-        )
-    
-    with col2:
-        symbol = st.text_input("Símbolo", value="BTCUSDT", help="Par de trading en Binance")
-        days = st.slider("Días históricos", 30, 3650, 365, 30, help="Cantidad de días de historia a descargar")
-    
-    st.markdown("---")
     st.markdown("""
-    **Información:**
-    - 🌐 **Por defecto**: Los datos se descargan automáticamente desde Binance API
-    - � **Fallback automático**: Si Binance está bloqueado, usa CoinGecko automáticamente
-    - �📂 **Archivo CSV**: Sube tu propio archivo si prefieres usar datos históricos específicos
-    
-    **Nota para Streamlit Cloud:** 
-    - Binance bloquea IPs de servidores cloud (error 451)
-    - La app automáticamente usa CoinGecko como alternativa (sin restricciones)
-    - CoinGecko: datos gratuitos, máximo 365 días de historia
+        **Archivos de ejemplo:** BTCUSDT_1d_last_year.csv, BTCUSDT_1d_last_5_years.csv, BTCUSDT_1d_last_10_years.csv
     """)
 
 # Cargar datos
-df = load_df(
-    uploaded_file=uploaded_file,
-    symbol=symbol,
-    days=days
-)
+df = load_df(uploaded_file=uploaded_file)
 
 # Inicializar session state
 if 'predictions_1d' not in st.session_state:
